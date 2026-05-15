@@ -1,0 +1,24 @@
+[package]
+name = "dark-factory"
+version = "0.1.0"
+edition = "2024"
+description = "Rust→Zeta transpiler — autonomous crate conversion pipeline"
+license = "MIT"
+repository = "https://github.com/murphsicles/dark-factory"
+
+[[bin]]
+name = "df"
+path = "src/main.rs"
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
+flate2 = "1"
+tar = "0.4"
