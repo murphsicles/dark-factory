@@ -85,6 +85,35 @@ fn emit_item(item: &Item, ctx: &mut Context) {
         Item::Const(c) => emit_const(c, ctx),
         Item::Static(s) => emit_static(s, ctx),
         Item::Type(t) => emit_type_alias(t, ctx),
+        Item::Macro(m) => {
+            // macro_rules! — emit as raw token stream (preserves macro body)
+            let s = m.to_token_stream().to_string();
+            ctx.emit_line(&s);
+        }
+        Item::ForeignMod(fm) => {
+            // extern "C" { ... } block
+            let abi_name = fm.abi.name.as_ref().map(|n| n.value()).unwrap_or_else(|| "C".to_string());
+            ctx.emit_line(&format!("extern \"{}\" {{", abi_name));
+            ctx.push_indent();
+            for item in &fm.items {
+                if let syn::ForeignItem::Fn(f) = item {
+                    let name = f.sig.ident.to_string();
+                    let params: Vec<String> = f.sig.inputs.iter().map(|arg| match arg {
+                        syn::FnArg::Typed(pat) => {
+                            let pat_str = pat_ident(&pat.pat);
+                            let ty_str = emit_type(&pat.ty);
+                            format!("{}: {}", pat_str, ty_str)
+                        }
+                        _ => "_".into(),
+                    }).collect();
+                    let ret = emit_return_type(&f.sig.output);
+                    ctx.emit_line(&format!("fn {}({}){};", name, params.join(", "), ret));
+                }
+            }
+            ctx.pop_indent();
+            ctx.emit_line("}");
+            ctx.emit_line("");
+        }
         _ => emit_attrs_only(item, ctx),
     }
 }
@@ -362,7 +391,7 @@ fn emit_impl(i: &ItemImpl, ctx: &mut Context) {
     let ty = emit_type(&i.self_ty);
     let (gen_params, gen_where) = params_and_where(&i.generics);
     let trait_path = i.trait_.as_ref().map(|(_, path, _)| {
-        path.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::")
+        emit_path_with_args(path)
     });
     match trait_path {
         Some(tn) => {
