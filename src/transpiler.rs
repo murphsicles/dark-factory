@@ -23,7 +23,8 @@ pub fn convert_file(source: &str, filename: &str) -> anyhow::Result<String> {
     let syntax: File = syn::parse_file(source)?;
     let mut ctx = Context::new(filename);
     emit_file(&syntax, &mut ctx);
-    Ok(ctx.output)
+    let result = crate::post_process::clean(&ctx.output);
+    Ok(result)
 }
 
 struct Context {
@@ -452,3 +453,10 @@ fn emit_attrs(attrs: &[Attribute], ctx: &mut Context) {
         }
     }
 }
+
+// ─── Post-processing ──────────────────────────────────────────────────────
+//
+// Cleans up formatting artifacts from quote!() rendering:
+//   self . value  →  self.value
+//   Some (v)      →  Some(v)
+//   ;\n}          →  \n}  (remove trailing semicolons before closing braces)

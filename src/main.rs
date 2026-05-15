@@ -8,6 +8,7 @@ mod transpiler;
 mod rewrites;
 mod pipeline;
 mod zeta;
+mod post_process;
 
 #[derive(Parser)]
 #[command(name = "df", about = "Rust → Zeta transpiler", version)]
