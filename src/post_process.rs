@@ -55,10 +55,21 @@ pub fn clean(input: &str) -> String {
 
     // ── Phase 11: Edge-case polish ────────────────────────────────────────
     s = s.replace(" ;", ";");  // catch any remaining space-semicolons
-    // Fix ! ( → !( (macro invocation spacing)
+    // Fix ! ( → !( (macro invocation spacing, e.g., assert!(...), println!(...))
     s = s.replace("! (", "!(");
+    // Also fix space before !( when preceded by identifier: `assert !(` → `assert!(`
+    s = fix_macro_bang(&s);
     // Fix # [ → #[ (attribute spacing from TokenStream)
     s = s.replace("# [", "#[");
+    // Fix turbofish spacing: `::< X >` → `::<X>`
+    // TokenStream::to_string() renders generics with surrounding spaces
+    s = fix_turbofish(&s);
+    // Fix generic angle spacing: `Box < T >` → `Box<T>` (non-turbofish generics)
+    s = fix_generic_angles(&s);
+    // Fix trailing space before > in non-turbofish generics (already handled by above)
+    // But also fix: `Void >` → `Void>` where not preceded by ::<
+    // This catches leftovers after fix_generic_angles processes the open bracket
+    s = fix_trailing_gt_spaces(&s);
 
     s
 }
@@ -132,6 +143,7 @@ fn fix_ref_spacing(s: &str) -> String {
     let s = s.replace("& self", "&self");
     let s = s.replace("& mut ", "&mut ");
     let s = s.replace("& *", "&*");
+    let s = s.replace("& '", "&'");  // &'lifetime
     
     // Handle & followed by identifier: `& foo` → `&foo`
     // But preserve & followed by bitwise/ref operators: `& &`, `& |`, etc.
@@ -209,6 +221,15 @@ fn fix_single_colon(s: &str) -> String {
             remaining = after;
             continue;
         }
+        // Skip colons inside doc comments or URL-like patterns
+        // Check if the line contains /// (doc comment) or https: (URL)
+        let line_start = result.rfind('\n').map(|n| n + 1).unwrap_or(0);
+        let line_prefix = &result[line_start..];
+        if line_prefix.contains("///") || line_prefix.contains("//!") || line_prefix.contains("https") {
+            result.push(':');
+            remaining = after;
+            continue;
+        }
         // Single colon: strip leading space, add one trailing space
         if result.ends_with(' ') {
             let trimmed = result.trim_end();
@@ -216,6 +237,165 @@ fn fix_single_colon(s: &str) -> String {
         }
         result.push_str(": ");
         remaining = after.trim_start_matches(' ');
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Fix turbofish spacing: `::< X >` → `::<X>` (and similar generic patterns).
+/// TokenStream::to_string() renders generics with surrounding spaces.
+fn fix_turbofish(s: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = s;
+    while let Some(pos) = remaining.find("::<") {
+        result.push_str(&remaining[..pos]);
+        result.push_str("::<");
+        let after = &remaining[pos + 3..];
+        // Skip any space after <
+        let inner = after.trim_start_matches(' ');
+        // Find the closing >
+        if let Some(close) = inner.find('>') {
+            // Get the content between < and >, strip spaces
+            let content = &inner[..close];
+            let trimmed = content.trim();
+            // Remove internal spaces around commas in type lists
+            let cleaned_content: String = trimmed
+                .split(',')
+                .map(|part| part.trim())
+                .collect::<Vec<_>>()
+                .join(", ");
+            result.push_str(&cleaned_content);
+            result.push('>');
+            remaining = &inner[close + 1..];
+        } else {
+            // No closing > found, just use as-is
+            remaining = inner;
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Fix generic angle bracket spacing: `Box < T >` → `Box<T>` (non-turbofish generics).
+/// Only applies when preceded by an identifier (type name), not comparison operators.
+fn fix_generic_angles(s: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = s;
+    // Match pattern: identifier < Type >  where Type is simple (no nested <>)
+    while let Some(pos) = remaining.find(" < ") {
+        result.push_str(&remaining[..pos]);
+        // Check if preceded by an identifier character
+        if pos > 0 {
+            let prev = remaining.as_bytes()[pos - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'>' || prev == b')' {
+                // This might be a generic start. Look ahead for >
+                let after_space = &remaining[pos + 3..];
+                let content_end = after_space.find('>').unwrap_or(0);
+                if content_end > 0 {
+                    let content = &after_space[..content_end];
+                    // Only collapse if the content is fairly simple
+                    // (identifier, optional lifetime, commas, nested <>
+                    // with matching depth)
+                    // For now: only handle single identifier or simple list
+                    let trimmed = content.trim();
+                    let has_matching_lt = trimmed.matches('<').count() == trimmed.matches('>').count();
+                    if has_matching_lt {
+                        // Collapse spaces in the content
+                        let cleaned: String = trimmed
+                            .split(',')
+                            .map(|p| {
+                                let p = p.trim();
+                                // Clean up spaces like `& 'a` → `&'a`
+                                let p = p.replace("& ", "&");
+                                let p = p.replace("* ", "*");
+                                p
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        result.push('<');
+                        result.push_str(&cleaned);
+                        result.push('>');
+                        remaining = &after_space[content_end + 1..];
+                        continue;
+                    }
+                }
+            }
+        }
+        // Not a generic pattern, keep as-is
+        result.push_str(" < ");
+        remaining = &remaining[pos + 3..];
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Fix trailing space before >: `Void >` → `Void>` in post-generic contexts.
+/// This catches leftovers after fix_generic_angles/fix_turbofish process the open bracket.
+/// Only applies where > follows a type-like identifier or >.
+fn fix_trailing_gt_spaces(s: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = s;
+    while let Some(pos) = remaining.find(" >") {
+        result.push_str(&remaining[..pos]);
+        // Check if the space is between > and non-space or at end of line
+        // Look at what comes before the space
+        if pos > 0 {
+            let prev = remaining.as_bytes()[pos - 1];
+            // Only collapse if preceded by alphanumeric, ), ], or another >
+            if prev.is_ascii_alphanumeric() || prev == b')' || prev == b']' {
+                // Also check what follows
+                let after = &remaining[pos + 2..];
+                // Only collapse if followed by something that's NOT an operator
+                // (to avoid breaking `a > b` comparisons)
+                let next = after.chars().next();
+                match next {
+                    Some(c) if c.is_alphanumeric() || c == '_' || c == '(' || c == '{' || c == '[' => {
+                        // Preceded by type-like, followed by expression-start → likely generic closing
+                        result.push('>');
+                        remaining = after;
+                        continue;
+                    }
+                    Some('>') => {
+                        // `> >` → `>>` (nested generic closing)
+                        result.push('>');
+                        remaining = after;
+                        continue;
+                    }
+                    Some(',') => {
+                        // `> ,` → `>,` (generic closing before comma)
+                        result.push('>');
+                        remaining = after;
+                        continue;
+                    }
+                    _ => {
+                        // Comparison operator or other, keep space
+                        result.push_str(" >");
+                        remaining = &remaining[pos + 2..];
+                        continue;
+                    }
+                }
+            }
+        }
+        result.push_str(" >");
+        remaining = &remaining[pos + 2..];
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Fix space before `!(`: `assert !(` → `assert!(`.
+/// TokenStream renders macro calls as `identifier ! (...)`.
+fn fix_macro_bang(s: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = s;
+    while let Some(pos) = remaining.find("!(") {
+        result.push_str(&remaining[..pos]);
+        // Strip trailing space from result (space between macro name and !)
+        if result.ends_with(' ') {
+            result.pop();
+        }
+        result.push_str("!(");
+        remaining = &remaining[pos + 2..];
     }
     result.push_str(remaining);
     result

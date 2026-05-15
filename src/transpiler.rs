@@ -460,20 +460,12 @@ fn emit_attrs(attrs: &[Attribute], ctx: &mut Context) {
                     }
                 }
             }
-        } else if attr.path().is_ident("derive") {
-            // to_token_stream() already includes #[ ... ] formatting
-            let meta = attr.to_token_stream().to_string();
-            ctx.emit_line(&meta);
-        } else if attr.path().is_ident("inline") || attr.path().is_ident("cold") || attr.path().is_ident("must_use") {
-            let meta = attr.to_token_stream().to_string();
-            ctx.emit_line(&meta);
         } else if attr.path().is_ident("allow") || attr.path().is_ident("warn") || attr.path().is_ident("deny") || attr.path().is_ident("forbid") {
             // skip lint attrs
         } else {
+            // All other attrs: emit as-is (cfg, path, inline, derive, must_use, etc.)
             let meta = attr.to_token_stream().to_string();
-            if !meta.contains("derive") {
-                ctx.emit_line(&format!("// #{}", meta));
-            }
+            ctx.emit_line(&meta);
         }
     }
 }
