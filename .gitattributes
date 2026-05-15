@@ -1,0 +1,5 @@
+# Zeta source files
+*.z linguist-language=Zeta linguist-detectable=true
+*.zeta linguist-language=Zeta linguist-detectable=true
+*.zorb linguist-generated=true
+zorb.toml linguist-language=TOML linguist-detectable=false
