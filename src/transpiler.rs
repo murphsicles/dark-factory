@@ -269,7 +269,7 @@ fn emit_enum(e: &ItemEnum, ctx: &mut Context) {
             }
             syn::Fields::Unit => String::new(),
         };
-        ctx.emit_line(&format!("{},{}", name, fields));
+        ctx.emit_line(&format!("{}{},", name, fields));
     }
     ctx.pop_indent();
     ctx.emit_line("}");
@@ -352,7 +352,9 @@ fn emit_trait(t: &ItemTrait, ctx: &mut Context) {
 // ─── Use / Mod / Const / Static / Type ────────────────────────────────────
 
 fn emit_use(u: &ItemUse, ctx: &mut Context) {
-    ctx.emit_line(&format!("{};", u.to_token_stream()));
+    // u.to_token_stream() includes the trailing semicolon, so don't add another
+    let s = u.to_token_stream().to_string();
+    ctx.emit_line(&s);
 }
 
 fn emit_mod(m: &ItemMod, ctx: &mut Context) {
@@ -412,6 +414,22 @@ fn emit_stmt(stmt: &Stmt, ctx: &mut Context) {
         Stmt::Expr(expr, _semi) => {
             let s = expr_to_string(expr);
             if !s.is_empty() { ctx.emit_line(&format!("{};", s)); }
+        }
+        Stmt::Macro(mac) => {
+            emit_attrs(&mac.attrs, ctx);
+            let path_str = mac.mac.path.segments.iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+            // Render macro tokens preserving delimiter style
+            let tokens_raw = mac.mac.tokens.to_string();
+            let delim_str = match mac.mac.delimiter {
+                syn::MacroDelimiter::Paren(_) => format!("({})", tokens_raw),
+                syn::MacroDelimiter::Bracket(_) => format!("[{}]", tokens_raw),
+                syn::MacroDelimiter::Brace(_) => format!("{{ {} }}", tokens_raw),
+            };
+            let semi = if mac.semi_token.is_some() { ";" } else { "" };
+            ctx.emit_line(&format!("{}!{}{}", path_str, delim_str, semi));
         }
         _ => {}
     }
