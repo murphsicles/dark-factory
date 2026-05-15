@@ -109,11 +109,11 @@ fn emit_fn(f: &ItemFn, ctx: &mut Context) {
     let unsf = if f.sig.unsafety.is_some() { "unsafe " } else { "" };
     let const_kw = if f.sig.constness.is_some() { "const " } else { "" };
     let name = &f.sig.ident;
-    let generics = emit_generics(&f.sig.generics);
+    let (gen_params, gen_where) = params_and_where(&f.sig.generics);
     let params = emit_fn_params(&f.sig.inputs, ctx);
     let ret = emit_return_type(&f.sig.output);
 
-    ctx.emit_line(&format!("{}{}{}fn {}{}({}){} {{", vis, const_kw, unsf, name, generics, params, ret));
+    ctx.emit_line(&format!("{}{}{}fn {}{}({}){}{} {{", vis, const_kw, unsf, name, gen_params, params, ret, gen_where));
     ctx.push_indent();
     emit_block(&f.block, ctx);
     ctx.pop_indent();
@@ -221,16 +221,27 @@ fn emit_type(ty: &Type) -> String {
 }
 
 fn emit_generics(generics: &Generics) -> String {
-    if generics.params.is_empty() { return String::new(); }
-    let params: Vec<String> = generics.params.iter().map(|param| match param {
+    params_and_where(generics).0
+}
+
+/// Return (params_string, where_clause_string) separately.
+fn params_and_where(generics: &Generics) -> (String, String) {
+    let params_str = if generics.params.is_empty() {
+        String::new()
+    } else {
+        let params: Vec<String> = generics.params.iter().map(|param| match param {
         GenericParam::Type(tp) => {
             let name = &tp.ident;
             if tp.bounds.is_empty() { name.to_string() }
             else {
                 let bs: Vec<String> = tp.bounds.iter().map(|b| {
-                    if let TypeParamBound::Trait(t) = b {
-                        t.path.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::")
-                    } else { String::new() }
+                    match b {
+                        TypeParamBound::Trait(t) => {
+                            emit_path_with_args(&t.path)
+                        }
+                        TypeParamBound::Lifetime(lt) => lt.ident.to_string(),
+                        _ => "_".into(),
+                    }
                 }).collect();
                 format!("{}: {}", name, bs.join(" + "))
             }
@@ -241,7 +252,42 @@ fn emit_generics(generics: &Generics) -> String {
             format!("const {}: {}", cp.ident, ty)
         }
     }).collect();
-    format!("<{}>", params.join(", "))
+        format!("<{}>", params.join(", "))
+    };
+    let where_str = emit_where_clause_str(&generics.where_clause);
+    (params_str, where_str)
+}
+
+/// Emit generics including where clause (for function signatures).
+fn emit_generics_full(generics: &Generics) -> String {
+    let (params, wc) = params_and_where(generics);
+    format!("{}{}", params, wc)
+}
+
+fn emit_where_clause_str(wc: &Option<WhereClause>) -> String {
+    match wc {
+        Some(wc) if !wc.predicates.is_empty() => {
+            let preds: Vec<String> = wc.predicates.iter().map(|p| match p {
+                syn::WherePredicate::Type(pt) => {
+                    let ty = emit_type(&pt.bounded_ty);
+                    let bounds: Vec<String> = pt.bounds.iter().map(|b| match b {
+                        TypeParamBound::Trait(tb) => {
+                            emit_path_with_args(&tb.path)
+                        }
+                        TypeParamBound::Lifetime(lt) => lt.ident.to_string(),
+                        _ => "_".into(),
+                    }).collect();
+                    format!("{}: {}", ty, bounds.join(" + "))
+                }
+                syn::WherePredicate::Lifetime(pl) => {
+                    format!("{}: {}", pl.lifetime.ident, pl.bounds.iter().map(|b| b.ident.to_string()).collect::<Vec<_>>().join(" + "))
+                }
+                _ => "_".into(),
+            }).collect();
+            format!(" where {}", preds.join(", "))
+        }
+        _ => String::new(),
+    }
 }
 
 fn emit_return_type(ret: &ReturnType) -> String {
@@ -314,17 +360,16 @@ fn emit_impl(i: &ItemImpl, ctx: &mut Context) {
     emit_attrs(&i.attrs, ctx);
     let unsf = if i.unsafety.is_some() { "unsafe " } else { "" };
     let ty = emit_type(&i.self_ty);
+    let (gen_params, gen_where) = params_and_where(&i.generics);
     let trait_path = i.trait_.as_ref().map(|(_, path, _)| {
         path.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::")
     });
     match trait_path {
         Some(tn) => {
-            let g = emit_generics(&i.generics);
-            ctx.emit_line(&format!("{}impl{} {} for {} {{", unsf, g, tn, ty));
+            ctx.emit_line(&format!("{}impl{} {} for {}{} {{", unsf, gen_params, tn, ty, gen_where));
         }
         None => {
-            let g = emit_generics(&i.generics);
-            ctx.emit_line(&format!("{}impl{} {} {{", unsf, g, ty));
+            ctx.emit_line(&format!("{}impl{} {}{} {{", unsf, gen_params, ty, gen_where));
         }
     }
     ctx.push_indent();
@@ -360,16 +405,17 @@ fn emit_impl_item(item: &syn::ImplItem, ctx: &mut Context) {
 fn emit_trait(t: &ItemTrait, ctx: &mut Context) {
     emit_attrs(&t.attrs, ctx);
     let vis = if matches!(t.vis, Visibility::Public(_)) { "pub " } else { "" };
-    let generics = emit_generics(&t.generics);
+    let (gen_params, gen_where) = params_and_where(&t.generics);
     // NOTE: Post-processor should convert "trait" to "concept"
-    ctx.emit_line(&format!("{}trait {}{} {{", vis, t.ident, generics));
+    ctx.emit_line(&format!("{}trait {}{}{} {{", vis, t.ident, gen_params, gen_where));
     ctx.push_indent();
     for item in &t.items {
         match item {
             syn::TraitItem::Fn(f) => {
                 let params = emit_fn_params(&f.sig.inputs, ctx);
                 let ret = emit_return_type(&f.sig.output);
-                ctx.emit_line(&format!("fn {}({}){};", f.sig.ident, params, ret));
+                let (gen_params, gen_where) = params_and_where(&f.sig.generics);
+                ctx.emit_line(&format!("fn {}{}({}){}{};", f.sig.ident, gen_params, params, ret, gen_where));
             }
             syn::TraitItem::Type(t) => { ctx.emit_line(&format!("type {};", t.ident)); }
             syn::TraitItem::Const(c) => { ctx.emit_line(&format!("const {}: {};", c.ident, emit_type(&c.ty))); }
@@ -507,3 +553,23 @@ fn emit_attrs(attrs: &[Attribute], ctx: &mut Context) {
 //   self . value  →  self.value
 //   Some (v)      →  Some(v)
 //   ;\n}          →  \n}  (remove trailing semicolons before closing braces)
+
+/// Emit a path including generic args: `Deserializer<'de>` or `Into<Id>`.
+fn emit_path_with_args(path: &syn::Path) -> String {
+    path.segments.iter().map(|s| {
+        let name = s.ident.to_string();
+        let args = match &s.arguments {
+            syn::PathArguments::AngleBracketed(args) if !args.args.is_empty() => {
+                let ps: Vec<String> = args.args.iter().map(|a| match a {
+                    syn::GenericArgument::Type(t) => emit_type(t),
+                    syn::GenericArgument::Lifetime(lt) => lt.ident.to_string(),
+                    syn::GenericArgument::Const(e) => expr_to_string(e),
+                    _ => "_".into(),
+                }).collect();
+                format!("<{}>", ps.join(", "))
+            }
+            _ => String::new(),
+        };
+        format!("{}{}", name, args)
+    }).collect::<Vec<_>>().join("::")
+}
