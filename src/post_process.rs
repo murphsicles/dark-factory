@@ -57,6 +57,8 @@ pub fn clean(input: &str) -> String {
     s = s.replace(" ;", ";");  // catch any remaining space-semicolons
     // Fix ! ( → !( (macro invocation spacing)
     s = s.replace("! (", "!(");
+    // Fix # [ → #[ (attribute spacing from TokenStream)
+    s = s.replace("# [", "#[");
 
     s
 }
@@ -132,15 +134,16 @@ fn fix_ref_spacing(s: &str) -> String {
     let s = s.replace("& *", "&*");
     
     // Handle & followed by identifier: `& foo` → `&foo`
-    // But preserve & followed by operators like &, |, * (bitwise/ref/etc)
+    // But preserve & followed by bitwise/ref operators: `& &`, `& |`, etc.
     let mut result = String::new();
     let mut remaining = &s[..];
     while let Some(pos) = remaining.find("& ") {
         result.push_str(&remaining[..pos]);
         result.push('&');
         let after = &remaining[pos + 2..];
-        if after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
-            // Strip space before identifier
+        let strip = after.starts_with(|c: char| c.is_alphanumeric() || c == '_');
+        if strip {
+            // Strip space before identifier (reference type or borrow)
         } else {
             result.push(' ');
         }
@@ -148,15 +151,31 @@ fn fix_ref_spacing(s: &str) -> String {
     }
     result.push_str(remaining);
     
-    // Handle * followed by identifier (dereference)
+    // Handle * followed by identifier (dereference vs multiplication)
+    // Dereference: `*ptr` — space should be stripped
+    // Multiplication: `n * m` — space should be kept
+    // Heuristic: if preceding char is alnum/`)`/`]`, it's multiplication; otherwise dereference
     let mut result2 = String::new();
     remaining = &result[..];
     while let Some(pos) = remaining.find("* ") {
         result2.push_str(&remaining[..pos]);
         result2.push('*');
         let after = &remaining[pos + 2..];
-        if after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
-            // Strip space before identifier
+        let is_deref = if pos > 0 {
+            // Look backwards past any spaces to find actual preceding non-space char
+            let before_space = remaining[..pos].trim_end();
+            let prev = before_space.chars().last();
+            match prev {
+                // Preceded by alphanumeric, ), ], or > → multiplication → keep space
+                Some(c) if c.is_alphanumeric() || c == ')' || c == ']' || c == '>' => false,
+                _ => true, // dereference
+            }
+        } else {
+            // At start of string → dereference
+            true
+        };
+        if is_deref && after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+            // Strip space before identifier (dereference)
         } else {
             result2.push(' ');
         }

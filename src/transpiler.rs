@@ -107,12 +107,13 @@ fn emit_fn(f: &ItemFn, ctx: &mut Context) {
     emit_attrs(&f.attrs, ctx);
     let vis = if matches!(f.vis, Visibility::Public(_)) { "pub " } else { "" };
     let unsf = if f.sig.unsafety.is_some() { "unsafe " } else { "" };
+    let const_kw = if f.sig.constness.is_some() { "const " } else { "" };
     let name = &f.sig.ident;
     let generics = emit_generics(&f.sig.generics);
     let params = emit_fn_params(&f.sig.inputs, ctx);
     let ret = emit_return_type(&f.sig.output);
 
-    ctx.emit_line(&format!("{}{}fn {}{}({}){} {{", vis, unsf, name, generics, params, ret));
+    ctx.emit_line(&format!("{}{}{}fn {}{}({}){} {{", vis, const_kw, unsf, name, generics, params, ret));
     ctx.push_indent();
     emit_block(&f.block, ctx);
     ctx.pop_indent();
@@ -184,6 +185,10 @@ fn emit_type(ty: &Type) -> String {
         Type::Infer(_) => "_".into(),
         Type::Never(_) => "!".into(),
         Type::Paren(p) => format!("({})", emit_type(&p.elem)),
+        Type::Ptr(p) => {
+            let mut_kw = if p.mutability.is_some() { "mut " } else { "const " };
+            format!("*{}{}", mut_kw, emit_type(&p.elem))
+        }
         _ => "_".into(),
     }
 }
@@ -456,11 +461,12 @@ fn emit_attrs(attrs: &[Attribute], ctx: &mut Context) {
                 }
             }
         } else if attr.path().is_ident("derive") {
+            // to_token_stream() already includes #[ ... ] formatting
             let meta = attr.to_token_stream().to_string();
-            ctx.emit_line(&format!("#[{}]", meta.trim_start_matches("#[").trim_end_matches(']')));
+            ctx.emit_line(&meta);
         } else if attr.path().is_ident("inline") || attr.path().is_ident("cold") || attr.path().is_ident("must_use") {
             let meta = attr.to_token_stream().to_string();
-            ctx.emit_line(&format!("#[{}]", meta.trim_start_matches("#[").trim_end_matches(']')));
+            ctx.emit_line(&meta);
         } else if attr.path().is_ident("allow") || attr.path().is_ident("warn") || attr.path().is_ident("deny") || attr.path().is_ident("forbid") {
             // skip lint attrs
         } else {
