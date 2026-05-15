@@ -189,6 +189,33 @@ fn emit_type(ty: &Type) -> String {
             let mut_kw = if p.mutability.is_some() { "mut " } else { "const " };
             format!("*{}{}", mut_kw, emit_type(&p.elem))
         }
+        Type::ImplTrait(t) => {
+            // impl Trait — emit bounds with full generic args
+            let bounds: Vec<String> = t.bounds.iter().map(|b| {
+                match b {
+                    TypeParamBound::Trait(tb) => {
+                        tb.path.segments.iter().map(|s| {
+                            let seg_name = s.ident.to_string();
+                            let args = match &s.arguments {
+                                syn::PathArguments::AngleBracketed(args) if !args.args.is_empty() => {
+                                    let ps: Vec<String> = args.args.iter().map(|a| match a {
+                                        syn::GenericArgument::Type(t) => emit_type(t),
+                                        syn::GenericArgument::Lifetime(lt) => lt.ident.to_string(),
+                                        _ => "_".into(),
+                                    }).collect();
+                                    format!("<{}>", ps.join(", "))
+                                }
+                                _ => String::new(),
+                            };
+                            format!("{}{}", seg_name, args)
+                        }).collect::<Vec<_>>().join("::")
+                    }
+                    TypeParamBound::Lifetime(lt) => lt.ident.to_string(),
+                    _ => "_".into(),
+                }
+            }).collect();
+            format!("impl {}", bounds.join(" + "))
+        }
         _ => "_".into(),
     }
 }
@@ -416,9 +443,13 @@ fn emit_stmt(stmt: &Stmt, ctx: &mut Context) {
             ctx.emit_line(&format!("let {}{}{};", mut_pat, pat_str, init_str));
         }
         Stmt::Item(item) => { emit_item(item, ctx); }
-        Stmt::Expr(expr, _semi) => {
+        Stmt::Expr(expr, semi) => {
             let s = expr_to_string(expr);
-            if !s.is_empty() { ctx.emit_line(&format!("{};", s)); }
+            if !s.is_empty() {
+                // Only add semicolon if the source had one (tail expr = no semi)
+                let sep = if semi.is_some() { ";" } else { "" };
+                ctx.emit_line(&format!("{}{}", s, sep));
+            }
         }
         Stmt::Macro(mac) => {
             emit_attrs(&mac.attrs, ctx);
